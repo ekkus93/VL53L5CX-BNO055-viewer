@@ -79,13 +79,20 @@ void setup() {
 
   Serial.println("{\"status\":\"initializing\"}");
 
+  // Disable all sensors before I2C init to prevent bus contention
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    pinMode(LPN_PINS[i], OUTPUT);
+    digitalWrite(LPN_PINS[i], LOW);
+  }
+  delay(10);
+
   // Initialize both I2C buses
   Wire.begin(SDA0_PIN, SCL0_PIN);
   Wire.setClock(I2C_SPEED);
   Wire1.begin(SDA1_PIN, SCL1_PIN);
   Wire1.setClock(I2C_SPEED);
 
-  // Scan both buses for devices
+  // Scan both buses for devices (should be empty with all LPn LOW)
   for (int bus = 0; bus < 2; bus++) {
     TwoWire &w = (bus == 0) ? Wire : Wire1;
     Serial.printf("{\"status\":\"i2c_scan\",\"bus\":%d,\"devices\":[", bus);
@@ -105,13 +112,6 @@ void setup() {
 
   // Create mutex for bus 1 data sharing between cores
   bus1Mutex = xSemaphoreCreateMutex();
-
-  // Set all LPn pins LOW to disable all sensors initially
-  for (int i = 0; i < NUM_SENSORS; i++) {
-    pinMode(LPN_PINS[i], OUTPUT);
-    digitalWrite(LPN_PINS[i], LOW);
-  }
-  delay(10);
 
   // Enable sensors one-by-one, change address, configure
   int sensors_initialized = 0;
@@ -196,6 +196,9 @@ void loop() {
 
     for (int i = 0; i < NUM_SENSORS; i++) {
       if (got_data[i]) {
+        // Guard: each sensor needs ~550 bytes, bail if buffer is too full
+        if (pos > (int)sizeof(buf) - 600) break;
+
         if (!first) buf[pos++] = ',';
         first = false;
 
@@ -214,8 +217,7 @@ void loop() {
       }
     }
 
-    pos += sprintf(buf + pos, "],\"quat\":[1.000000,0.000000,0.000000,0.000000],\"v\":\"%s\"}\n",
-                   VERSION);
+    pos += sprintf(buf + pos, "],\"v\":\"%s\"}\n", VERSION);
 
     Serial.write(buf, pos);
   }
