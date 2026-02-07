@@ -4,14 +4,14 @@ from dataclasses import dataclass
 
 
 # Package version (semantic versioning) - must match firmware
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 # Sensor resolution
 RESOLUTION = 8  # 8x8 zones
 NUM_ZONES = 64
 
 # Multi-sensor configuration
-NUM_TOF_SENSORS = 5
+NUM_TOF_SENSORS = 4
 TOF_SENSOR_SPACING = 0.025  # 25mm in meters
 
 # Field of view
@@ -43,11 +43,11 @@ class BoardConfig:
 
 
 def get_tof_sensor_position(sensor_id: int) -> tuple[float, float, float]:
-    """Get world position for ToF sensor by ID (0-4).
+    """Get world position for ToF sensor by ID (0-3).
 
-    Sensors are arranged in a row with 25mm spacing, centered around sensor 2.
+    Sensors are arranged in a row with 25mm spacing, centered between sensors 1 and 2.
     """
-    x_offset = (sensor_id - 2) * TOF_SENSOR_SPACING  # -50mm, -25mm, 0mm, +25mm, +50mm
+    x_offset = (sensor_id - 1.5) * TOF_SENSOR_SPACING  # -37.5mm, -12.5mm, +12.5mm, +37.5mm
     return (x_offset, -0.0254, 0.0)  # Y=-25.4mm (1 inch from IMU), Z=0
 
 
@@ -63,7 +63,7 @@ IMU_BOARD = BoardConfig(
     fallback_color=(128, 0, 128, 255),  # Purple
 )
 
-# ToF boards: 5 VL53L5CX sensors on 10mm x 16mm breakouts
+# ToF boards: 4 VL53L5CX sensors on 10mm x 16mm breakouts
 # World positions: 25mm spacing in X direction, ~1 inch (25.4mm) in -Y direction from IMU
 # Sensor offset: aperture is ~4mm from top edge, flush with top surface
 # Sensor yaw: 90° CCW to align sensor's internal coordinate system with world
@@ -80,8 +80,8 @@ TOF_BOARDS = [
     for i in range(NUM_TOF_SENSORS)
 ]
 
-# Backward compatibility: single sensor at center position (sensor 2)
-TOF_BOARD = TOF_BOARDS[2]
+# Backward compatibility: single sensor at center-left position (sensor 1)
+TOF_BOARD = TOF_BOARDS[1]
 
 # Visualization settings
 TARGET_FPS = 30  # Target visualization frame rate

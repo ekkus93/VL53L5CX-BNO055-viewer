@@ -1,35 +1,35 @@
 /*
  * VL53L5CX ToF Sensor Reader for ESP32 (Dual I2C Bus)
  *
- * Reads 8x8 distance data from 5 VL53L5CX sensors using two I2C buses
+ * Reads 8x8 distance data from 4 VL53L5CX sensors using two I2C buses
  * for parallel reads, outputs JSON over serial.
  *
  * Wiring:
- *   Bus 0 (Wire):  SDA -> GPIO 21, SCL -> GPIO 22  -> Sensors 0, 1, 2
- *   Bus 1 (Wire1): SDA -> GPIO 25, SCL -> GPIO 26  -> Sensors 3, 4
+ *   Bus 0 (Wire):  SDA -> GPIO 21, SCL -> GPIO 22  -> Sensors 0, 1
+ *   Bus 1 (Wire1): SDA -> GPIO 25, SCL -> GPIO 26  -> Sensors 2, 3
  *   VIN -> 3V3, GND -> GND (all sensors)
- *   LPn pins -> GPIO 19, 18, 5, 17, 16 (one per sensor for address management)
+ *   LPn pins -> GPIO 19, 18, 17, 16 (one per sensor for address management)
  */
 
 #include <Wire.h>
 #include <SparkFun_VL53L5CX_Library.h>
 
 // Version - must match viewer config.VERSION
-#define VERSION "0.2.0"
+#define VERSION "0.3.0"
 
-// I2C bus 0 pins (sensors 0-2)
+// I2C bus 0 pins (sensors 0-1)
 #define SDA0_PIN 21
 #define SCL0_PIN 22
 
-// I2C bus 1 pins (sensors 3-4)
+// I2C bus 1 pins (sensors 2-3)
 #define SDA1_PIN 25
 #define SCL1_PIN 26
 
 // Multi-sensor configuration
-#define NUM_SENSORS 5
-#define BUS0_SENSORS 3  // Sensors 0-2 on Wire
-const uint8_t LPN_PINS[NUM_SENSORS] = {19, 18, 5, 17, 16};
-const uint8_t I2C_ADDRESSES[NUM_SENSORS] = {0x30, 0x31, 0x32, 0x33, 0x34};
+#define NUM_SENSORS 4
+#define BUS0_SENSORS 2  // Sensors 0-1 on Wire
+const uint8_t LPN_PINS[NUM_SENSORS] = {19, 18, 17, 16};
+const uint8_t I2C_ADDRESSES[NUM_SENSORS] = {0x30, 0x31, 0x32, 0x33};
 
 // VL53L5CX ToF sensor instances
 SparkFun_VL53L5CX sensors[NUM_SENSORS];
@@ -151,7 +151,6 @@ void setup() {
   }
 
   Serial.printf("{\"status\":\"ranging_started\",\"sensors\":%d,\"resolution\":\"8x8\",\"frequency_hz\":15,\"buses\":2}\n", sensors_initialized);
-  Serial.println("{\"status\":\"imu_disabled\"}");
 
   // Start bus 1 reader task on core 0 (main loop runs on core 1)
   xTaskCreatePinnedToCore(bus1ReadTask, "Bus1Read", 4096, NULL, 1, NULL, 0);
