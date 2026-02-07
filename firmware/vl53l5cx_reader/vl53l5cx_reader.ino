@@ -5,10 +5,10 @@
  * for parallel reads, outputs JSON over serial.
  *
  * Wiring:
- *   Bus 0 (Wire):  SDA -> GPIO 21, SCL -> GPIO 22  -> Sensors 0, 1
- *   Bus 1 (Wire1): SDA -> GPIO 25, SCL -> GPIO 26  -> Sensors 2, 3
+ *   Bus 0 (Wire):  SDA -> GPIO 21 (D21), SCL -> GPIO 22 (D22)  -> Sensors 0, 1
+ *   Bus 1 (Wire1): SDA -> GPIO 25 (D25), SCL -> GPIO 26 (D26)  -> Sensors 2, 3
  *   VIN -> 3V3, GND -> GND (all sensors)
- *   LPn pins -> GPIO 19, 18, 17, 16 (one per sensor for address management)
+ *   LPn pins -> GPIO 19 (D19), 18 (D18), 17 (TX2), 16 (RX2)
  */
 
 #include <Wire.h>
