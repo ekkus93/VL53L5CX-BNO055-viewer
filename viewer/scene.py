@@ -51,31 +51,20 @@ class SceneHandles:
     zone_rays: list  # List of LineSegmentsHandle (one per sensor)
 
 
-def create_grid(server: viser.ViserServer, size: float = 2.0) -> list:
+def create_grid(server: viser.ViserServer, size: float = 2.0) -> viser.LineSegmentsHandle:
     """Create a reference grid on the XY plane."""
-    grid_handles = []
+    lines = []
     for i in range(-10, 11):
-        start_x = [-size, i * 0.2, 0]
-        end_x = [size, i * 0.2, 0]
-        handle_x = server.scene.add_spline_catmull_rom(
-            f"/grid/line_x_{i}",
-            positions=np.array([start_x, end_x]),
-            color=(160, 160, 160),
-            line_width=1.0,
-        )
-        grid_handles.append(handle_x)
+        offset = i * 0.2
+        lines.append([[-size, offset, 0], [size, offset, 0]])
+        lines.append([[offset, -size, 0], [offset, size, 0]])
 
-        start_y = [i * 0.2, -size, 0]
-        end_y = [i * 0.2, size, 0]
-        handle_y = server.scene.add_spline_catmull_rom(
-            f"/grid/line_y_{i}",
-            positions=np.array([start_y, end_y]),
-            color=(160, 160, 160),
-            line_width=1.0,
-        )
-        grid_handles.append(handle_y)
-
-    return grid_handles
+    return server.scene.add_line_segments(
+        "/grid",
+        points=np.array(lines, dtype=np.float32),
+        colors=(160, 160, 160),
+        line_width=1.0,
+    )
 
 
 def _create_board_mesh(
