@@ -33,7 +33,7 @@ class SceneHandles:
             /breadboard/tof_0               # ToF sensor 0 board frame
                 /breadboard/tof_0/mesh      # Board mesh
                 /breadboard/tof_0/sensor    # Sensor origin frame (with yaw)
-                    /breadboard/tof_0/sensor/rays/ray_N  # Zone rays
+                    /breadboard/tof_0/sensor/rays   # Zone rays (line segments)
                     /breadboard/tof_0/sensor/points      # Point cloud
                     /breadboard/tof_0/sensor/plane       # Fitted plane
             /breadboard/tof_1               # ToF sensor 1 board frame
@@ -48,7 +48,7 @@ class SceneHandles:
     tof_boards: list[viser.FrameHandle]
     tof_meshes: list[viser.MeshHandle]
     tof_sensors: list[viser.FrameHandle]
-    zone_rays: list[list]  # List of ray lists (one per sensor)
+    zone_rays: list  # List of LineSegmentsHandle (one per sensor)
 
 
 def create_grid(server: viser.ViserServer, size: float = 2.0) -> list:
@@ -217,38 +217,36 @@ def _create_zone_rays(
     server: viser.ViserServer,
     zone_angles: ZoneAngles,
     sensor_id: int = 0,
-) -> list:
+) -> viser.LineSegmentsHandle:
     """Create zone ray visualization in sensor-local coordinates.
 
     Args:
         server: Viser server instance.
         zone_angles: Pre-computed zone angle data.
-        sensor_id: ToF sensor ID (0-4) for path naming.
+        sensor_id: ToF sensor ID for path naming.
     """
     min_z = config.MIN_RANGE_MM / 1000
     max_z = config.MAX_RANGE_MM / 1000
 
-    zone_rays = []
+    points = np.zeros((config.NUM_ZONES, 2, 3), dtype=np.float32)
     for i in range(config.NUM_ZONES):
-        start = [
+        points[i, 0] = [
             min_z * zone_angles.tan_x[i],
             min_z * zone_angles.tan_y[i],
             min_z,
         ]
-        end = [
+        points[i, 1] = [
             max_z * zone_angles.tan_x[i],
             max_z * zone_angles.tan_y[i],
             max_z,
         ]
-        ray = server.scene.add_spline_catmull_rom(
-            f"/breadboard/tof_{sensor_id}/sensor/rays/ray_{i}",
-            positions=np.array([start, end], dtype=np.float32),
-            color=(100, 150, 255),
-            line_width=1.0,
-        )
-        zone_rays.append(ray)
 
-    return zone_rays
+    return server.scene.add_line_segments(
+        f"/breadboard/tof_{sensor_id}/sensor/rays",
+        points=points,
+        colors=(100, 150, 255),
+        line_width=1.0,
+    )
 
 
 def update_zone_rays(
@@ -258,7 +256,7 @@ def update_zone_rays(
     visible: bool = True,
     distances: np.ndarray | None = None,
     sensor_id: int = 0,
-) -> list:
+) -> viser.LineSegmentsHandle:
     """Update zone ray positions based on coordinate method.
 
     Args:
@@ -268,55 +266,48 @@ def update_zone_rays(
         visible: Whether rays should be visible.
         distances: Optional per-zone distances in mm. If provided, rays are clipped
             to the measured distance instead of MAX_RANGE_MM.
-        sensor_id: ToF sensor ID (0-4) for path naming.
+        sensor_id: ToF sensor ID for path naming.
 
-    Returns the new ray handles (the old ones become stale).
+    Returns the new LineSegmentsHandle (the old one becomes stale).
     """
     min_range = config.MIN_RANGE_MM / 1000
     max_range = config.MAX_RANGE_MM / 1000
 
-    new_rays = []
-    for i in range(config.NUM_ZONES):
-        if method == CoordinateMethod.UNIFORM:
-            # Use tangent-based directions
-            dir_x = zone_angles.tan_x[i]
-            dir_y = zone_angles.tan_y[i]
-            dir_z = 1.0
-        else:
-            # Use ST lookup ray directions (already normalized)
-            dir_x = zone_angles.st_ray_dir_x[i]
-            dir_y = zone_angles.st_ray_dir_y[i]
-            dir_z = zone_angles.st_ray_dir_z[i]
-            # Scale to match tangent-style (z=1 convention)
-            if dir_z > 0:
-                dir_x = dir_x / dir_z
-                dir_y = dir_y / dir_z
-                dir_z = 1.0
+    if method == CoordinateMethod.UNIFORM:
+        dir_x = zone_angles.tan_x
+        dir_y = zone_angles.tan_y
+        dir_z = np.ones(config.NUM_ZONES)
+    else:
+        dir_x = zone_angles.st_ray_dir_x.copy()
+        dir_y = zone_angles.st_ray_dir_y.copy()
+        dir_z = zone_angles.st_ray_dir_z.copy()
+        valid = dir_z > 0
+        dir_x[valid] = dir_x[valid] / dir_z[valid]
+        dir_y[valid] = dir_y[valid] / dir_z[valid]
+        dir_z[valid] = 1.0
 
-        # Use measured distance if provided and valid, otherwise max range
-        if distances is not None and distances[i] >= config.MIN_RANGE_MM:
-            end_range = distances[i] / 1000
-        else:
-            end_range = max_range
-
-        start = np.array([
-            min_range * dir_x,
-            min_range * dir_y,
-            min_range * dir_z,
-        ], dtype=np.float32)
-        end = np.array([
-            end_range * dir_x,
-            end_range * dir_y,
-            end_range * dir_z,
-        ], dtype=np.float32)
-
-        ray = server.scene.add_spline_catmull_rom(
-            f"/breadboard/tof_{sensor_id}/sensor/rays/ray_{i}",
-            positions=np.array([start, end], dtype=np.float32),
-            color=(100, 150, 255),
-            line_width=1.0,
-            visible=visible,
+    # Compute end ranges per zone
+    if distances is not None:
+        end_ranges = np.where(
+            distances >= config.MIN_RANGE_MM,
+            distances / 1000,
+            max_range,
         )
-        new_rays.append(ray)
+    else:
+        end_ranges = np.full(config.NUM_ZONES, max_range)
 
-    return new_rays
+    points = np.zeros((config.NUM_ZONES, 2, 3), dtype=np.float32)
+    points[:, 0, 0] = min_range * dir_x
+    points[:, 0, 1] = min_range * dir_y
+    points[:, 0, 2] = min_range * dir_z
+    points[:, 1, 0] = end_ranges * dir_x
+    points[:, 1, 1] = end_ranges * dir_y
+    points[:, 1, 2] = end_ranges * dir_z
+
+    return server.scene.add_line_segments(
+        f"/breadboard/tof_{sensor_id}/sensor/rays",
+        points=points,
+        colors=(100, 150, 255),
+        line_width=1.0,
+        visible=visible,
+    )

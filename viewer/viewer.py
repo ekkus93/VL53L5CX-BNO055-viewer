@@ -449,9 +449,7 @@ class VL53L5CXViewer:
         for sensor_id in range(config.NUM_TOF_SENSORS):
             # Skip if sensor disabled
             if sensor_id >= len(self.sensor_checkboxes) or not self.sensor_checkboxes[sensor_id].value:
-                # Hide rays for disabled sensors
-                for ray in self.scene.zone_rays[sensor_id]:
-                    ray.visible = False
+                self.scene.zone_rays[sensor_id].visible = False
                 continue
 
             # Get this sensor's distances if available
@@ -460,15 +458,13 @@ class VL53L5CXViewer:
                 sensor_distances, _ = sensor_data[sensor_id]
 
             if self.show_rays_checkbox.value and self.clip_rays_checkbox.value and sensor_distances is not None:
-                # Recreate rays clipped to measured distances
+                # Recreate rays clipped to measured distances (single call per sensor)
                 self.scene.zone_rays[sensor_id] = update_zone_rays(
                     server, self.zone_angles, coord_method,
                     visible=True, distances=sensor_distances, sensor_id=sensor_id
                 )
             else:
-                # Just update visibility
-                for ray in self.scene.zone_rays[sensor_id]:
-                    ray.visible = self.show_rays_checkbox.value
+                self.scene.zone_rays[sensor_id].visible = self.show_rays_checkbox.value
 
         return plane_handle
 
