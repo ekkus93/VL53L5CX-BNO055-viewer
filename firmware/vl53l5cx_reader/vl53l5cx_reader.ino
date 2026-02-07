@@ -44,7 +44,7 @@ float quatW = 1.0, quatX = 0.0, quatY = 0.0, quatZ = 0.0;
 #define I2C_SPEED 1000000
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(460800);
   delay(1000);
 
   Serial.println("{\"status\":\"initializing\"}");
@@ -97,92 +97,58 @@ void setup() {
 
   Serial.printf("{\"status\":\"ranging_started\",\"sensors\":%d,\"resolution\":\"8x8\",\"frequency_hz\":10}\n", sensors_initialized);
 
-  // Initialize BNO08X IMU (shares I2C bus with VL53L5CX)
-  // Try default address 0x4A first, then alternate 0x4B
-  if (imu.begin(0x4A, Wire)) {
-    imuAvailable = true;
-  } else if (imu.begin(0x4B, Wire)) {
-    imuAvailable = true;
-  }
-
-  if (imuAvailable) {
-    // Enable game rotation vector at 10ms interval (100Hz)
-    // Game rotation uses accel+gyro only (no magnetometer) - immune to magnetic interference
-    imu.enableGameRotationVector(10);
-    Serial.println("{\"status\":\"imu_ready\",\"mode\":\"game_rotation_vector\",\"frequency_hz\":100}");
-  } else {
-    Serial.println("{\"status\":\"imu_not_found\"}");
-  }
+  // IMU disabled for performance (not needed for this application)
+  Serial.println("{\"status\":\"imu_disabled\"}");
 }
 
+// JSON output buffer - built in RAM then sent in one Serial.write() call
+// Max size: 5 sensors × ~550 bytes + overhead ≈ 3KB
+static char buf[4096];
+
 void loop() {
-  // Poll IMU for new orientation data (non-blocking)
-  if (imuAvailable && imu.wasReset()) {
-    // Re-enable game rotation vector if IMU was reset
-    imu.enableGameRotationVector(10);
-  }
+  // Read each sensor independently as data becomes available
+  // This avoids waiting for the slowest sensor to hold up all others
+  bool any_data = false;
+  bool got_data[NUM_SENSORS] = {false};
 
-  if (imuAvailable && imu.getSensorEvent()) {
-    if (imu.getSensorEventID() == SENSOR_REPORTID_GAME_ROTATION_VECTOR) {
-      quatW = imu.getQuatReal();
-      quatX = imu.getQuatI();
-      quatY = imu.getQuatJ();
-      quatZ = imu.getQuatK();
-    }
-  }
-
-  // Check if any sensor has new data
-  bool any_ready = false;
   for (int i = 0; i < NUM_SENSORS; i++) {
     if (sensor_active[i] && sensors[i].isDataReady()) {
-      any_ready = true;
-      break;
+      got_data[i] = sensors[i].getRangingData(&measurementData[i]);
+      if (got_data[i]) any_data = true;
     }
   }
 
-  if (any_ready) {
-    // Begin JSON frame with sensor array
-    Serial.print("{\"sensors\":[");
+  if (any_data) {
+    // Build entire JSON in buffer, then send all at once
+    int pos = 0;
+    pos += sprintf(buf + pos, "{\"sensors\":[");
     bool first = true;
 
-    // Gather data from all ready sensors
     for (int i = 0; i < NUM_SENSORS; i++) {
-      if (sensor_active[i] && sensors[i].isDataReady() &&
-          sensors[i].getRangingData(&measurementData[i])) {
-
-        if (!first) Serial.print(",");
+      if (got_data[i]) {
+        if (!first) buf[pos++] = ',';
         first = false;
 
-        // Output sensor object
-        Serial.printf("{\"id\":%d,\"distances\":[", i);
-
+        pos += sprintf(buf + pos, "{\"id\":%d,\"distances\":[", i);
         for (int j = 0; j < 64; j++) {
-          Serial.print(measurementData[i].distance_mm[j]);
-          if (j < 63) Serial.print(",");
+          if (j > 0) buf[pos++] = ',';
+          pos += sprintf(buf + pos, "%d", (int)measurementData[i].distance_mm[j]);
         }
 
-        Serial.print("],\"status\":[");
-
+        pos += sprintf(buf + pos, "],\"status\":[");
         for (int j = 0; j < 64; j++) {
-          Serial.print(measurementData[i].target_status[j]);
-          if (j < 63) Serial.print(",");
+          if (j > 0) buf[pos++] = ',';
+          pos += sprintf(buf + pos, "%d", (int)measurementData[i].target_status[j]);
         }
-
-        Serial.print("]}");
+        pos += sprintf(buf + pos, "]}");
       }
     }
 
-    // Add quaternion (wxyz format) with 6 decimal places for accuracy
-    Serial.print("],\"quat\":[");
-    Serial.print(quatW, 6); Serial.print(",");
-    Serial.print(quatX, 6); Serial.print(",");
-    Serial.print(quatY, 6); Serial.print(",");
-    Serial.print(quatZ, 6);
-    Serial.print("],\"v\":\"");
-    Serial.print(VERSION);
-    Serial.println("\"}");
+    pos += sprintf(buf + pos, "],\"quat\":[%.6f,%.6f,%.6f,%.6f],\"v\":\"%s\"}\n",
+                   quatW, quatX, quatY, quatZ, VERSION);
+
+    Serial.write(buf, pos);
   }
 
-  // Small delay to prevent overwhelming the serial buffer
   delay(1);
 }
