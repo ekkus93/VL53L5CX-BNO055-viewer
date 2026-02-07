@@ -26,26 +26,29 @@ class SceneHandles:
     """Handles to the scene hierarchy.
 
     Hierarchy:
-        /breadboard                     # Breadboard frame (world origin)
-            /breadboard/imu             # IMU board frame
-                /breadboard/imu/mesh    # Board mesh
-                /breadboard/imu/sensor  # Sensor origin frame
-            /breadboard/tof             # ToF board frame
-                /breadboard/tof/mesh    # Board mesh
-                /breadboard/tof/sensor  # Sensor origin frame (with yaw)
-                    /breadboard/tof/sensor/rays/ray_N  # Zone rays
-                    /breadboard/tof/sensor/points      # Point cloud
-                    /breadboard/tof/sensor/plane       # Fitted plane
+        /breadboard                         # Breadboard frame (world origin)
+            /breadboard/imu                 # IMU board frame
+                /breadboard/imu/mesh        # Board mesh
+                /breadboard/imu/sensor      # Sensor origin frame
+            /breadboard/tof_0               # ToF sensor 0 board frame
+                /breadboard/tof_0/mesh      # Board mesh
+                /breadboard/tof_0/sensor    # Sensor origin frame (with yaw)
+                    /breadboard/tof_0/sensor/rays/ray_N  # Zone rays
+                    /breadboard/tof_0/sensor/points      # Point cloud
+                    /breadboard/tof_0/sensor/plane       # Fitted plane
+            /breadboard/tof_1               # ToF sensor 1 board frame
+                ... (same structure)
+            ... (sensors 2, 3, 4)
     """
 
     breadboard: viser.FrameHandle
     imu_board: viser.FrameHandle
     imu_mesh: viser.MeshHandle
     imu_sensor: viser.FrameHandle
-    tof_board: viser.FrameHandle
-    tof_mesh: viser.MeshHandle
-    tof_sensor: viser.FrameHandle
-    zone_rays: list
+    tof_boards: list[viser.FrameHandle]
+    tof_meshes: list[viser.MeshHandle]
+    tof_sensors: list[viser.FrameHandle]
+    zone_rays: list[list]  # List of ray lists (one per sensor)
 
 
 def create_grid(server: viser.ViserServer, size: float = 2.0) -> list:
@@ -154,42 +157,58 @@ def create_scene_hierarchy(
         wxyz=_yaw_to_wxyz(config.IMU_BOARD.sensor_yaw_deg),
     )
 
-    # ToF board frame (positioned at board center in world)
-    tof_board_pos = tuple(
-        np.array(config.TOF_BOARD.world_position) - np.array(config.TOF_BOARD.sensor_offset)
-    )
-    tof_board = server.scene.add_frame(
-        "/breadboard/tof",
-        show_axes=False,
-        position=tof_board_pos,
-    )
-    tof_mesh = _create_board_mesh(
-        server,
-        scene_path="/breadboard/tof/mesh",
-        board_config=config.TOF_BOARD,
-        assets_dir=assets_dir,
-    )
-    # ToF sensor frame (at sensor_offset from board center, with yaw correction)
-    tof_sensor = server.scene.add_frame(
-        "/breadboard/tof/sensor",
-        show_axes=True,
-        axes_length=0.01,
-        axes_radius=0.001,
-        position=config.TOF_BOARD.sensor_offset,
-        wxyz=_yaw_to_wxyz(config.TOF_BOARD.sensor_yaw_deg),
-    )
+    # ToF board frames (5 sensors positioned at board centers in world)
+    tof_boards = []
+    tof_meshes = []
+    tof_sensors = []
+    zone_rays = []
 
-    # Zone rays as children of ToF sensor (in sensor-local coordinates)
-    zone_rays = _create_zone_rays(server, zone_angles)
+    for i in range(config.NUM_TOF_SENSORS):
+        board_config = config.TOF_BOARDS[i]
+
+        # Create board frame
+        board_pos = tuple(
+            np.array(board_config.world_position) - np.array(board_config.sensor_offset)
+        )
+        board = server.scene.add_frame(
+            f"/breadboard/tof_{i}",
+            show_axes=False,
+            position=board_pos,
+        )
+        tof_boards.append(board)
+
+        # Create mesh
+        mesh = _create_board_mesh(
+            server,
+            scene_path=f"/breadboard/tof_{i}/mesh",
+            board_config=board_config,
+            assets_dir=assets_dir,
+        )
+        tof_meshes.append(mesh)
+
+        # Create sensor frame (at sensor_offset from board center, with yaw correction)
+        sensor = server.scene.add_frame(
+            f"/breadboard/tof_{i}/sensor",
+            show_axes=True,
+            axes_length=0.01,
+            axes_radius=0.001,
+            position=board_config.sensor_offset,
+            wxyz=_yaw_to_wxyz(board_config.sensor_yaw_deg),
+        )
+        tof_sensors.append(sensor)
+
+        # Create zone rays for this sensor (in sensor-local coordinates)
+        rays = _create_zone_rays(server, zone_angles, sensor_id=i)
+        zone_rays.append(rays)
 
     return SceneHandles(
         breadboard=breadboard,
         imu_board=imu_board,
         imu_mesh=imu_mesh,
         imu_sensor=imu_sensor,
-        tof_board=tof_board,
-        tof_mesh=tof_mesh,
-        tof_sensor=tof_sensor,
+        tof_boards=tof_boards,
+        tof_meshes=tof_meshes,
+        tof_sensors=tof_sensors,
         zone_rays=zone_rays,
     )
 
@@ -197,8 +216,15 @@ def create_scene_hierarchy(
 def _create_zone_rays(
     server: viser.ViserServer,
     zone_angles: ZoneAngles,
+    sensor_id: int = 0,
 ) -> list:
-    """Create zone ray visualization in sensor-local coordinates."""
+    """Create zone ray visualization in sensor-local coordinates.
+
+    Args:
+        server: Viser server instance.
+        zone_angles: Pre-computed zone angle data.
+        sensor_id: ToF sensor ID (0-4) for path naming.
+    """
     min_z = config.MIN_RANGE_MM / 1000
     max_z = config.MAX_RANGE_MM / 1000
 
@@ -215,7 +241,7 @@ def _create_zone_rays(
             max_z,
         ]
         ray = server.scene.add_spline_catmull_rom(
-            f"/breadboard/tof/sensor/rays/ray_{i}",
+            f"/breadboard/tof_{sensor_id}/sensor/rays/ray_{i}",
             positions=np.array([start, end], dtype=np.float32),
             color=(100, 150, 255),
             line_width=1.0,
@@ -231,6 +257,7 @@ def update_zone_rays(
     method: CoordinateMethod,
     visible: bool = True,
     distances: np.ndarray | None = None,
+    sensor_id: int = 0,
 ) -> list:
     """Update zone ray positions based on coordinate method.
 
@@ -241,6 +268,7 @@ def update_zone_rays(
         visible: Whether rays should be visible.
         distances: Optional per-zone distances in mm. If provided, rays are clipped
             to the measured distance instead of MAX_RANGE_MM.
+        sensor_id: ToF sensor ID (0-4) for path naming.
 
     Returns the new ray handles (the old ones become stale).
     """
@@ -283,7 +311,7 @@ def update_zone_rays(
         ], dtype=np.float32)
 
         ray = server.scene.add_spline_catmull_rom(
-            f"/breadboard/tof/sensor/rays/ray_{i}",
+            f"/breadboard/tof_{sensor_id}/sensor/rays/ray_{i}",
             positions=np.array([start, end], dtype=np.float32),
             color=(100, 150, 255),
             line_width=1.0,

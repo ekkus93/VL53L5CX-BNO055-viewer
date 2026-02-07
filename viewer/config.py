@@ -4,11 +4,15 @@ from dataclasses import dataclass
 
 
 # Package version (semantic versioning) - must match firmware
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 # Sensor resolution
 RESOLUTION = 8  # 8x8 zones
 NUM_ZONES = 64
+
+# Multi-sensor configuration
+NUM_TOF_SENSORS = 5
+TOF_SENSOR_SPACING = 0.025  # 25mm in meters
 
 # Field of view
 FOV_DIAGONAL_DEG = 65.0  # Diagonal field of view in degrees
@@ -38,6 +42,15 @@ class BoardConfig:
     fallback_color: tuple[int, int, int, int] = (128, 128, 128, 255)
 
 
+def get_tof_sensor_position(sensor_id: int) -> tuple[float, float, float]:
+    """Get world position for ToF sensor by ID (0-4).
+
+    Sensors are arranged in a row with 25mm spacing, centered around sensor 2.
+    """
+    x_offset = (sensor_id - 2) * TOF_SENSOR_SPACING  # -50mm, -25mm, 0mm, +25mm, +50mm
+    return (x_offset, -0.0254, 0.0)  # Y=-25.4mm (1 inch from IMU), Z=0
+
+
 # IMU board: BNO08x on 15mm x 26mm breakout
 # World position: at origin, sensor chip is the reference point
 # Sensor offset: chip is ~4mm above board center in Y, flush with top surface in Z
@@ -50,19 +63,25 @@ IMU_BOARD = BoardConfig(
     fallback_color=(128, 0, 128, 255),  # Purple
 )
 
-# ToF board: VL53L5CX on 10mm x 16mm breakout
-# World position: ~1 inch (25.4mm) in -Y direction from IMU
+# ToF boards: 5 VL53L5CX sensors on 10mm x 16mm breakouts
+# World positions: 25mm spacing in X direction, ~1 inch (25.4mm) in -Y direction from IMU
 # Sensor offset: aperture is ~4mm from top edge, flush with top surface
 # Sensor yaw: 90° CCW to align sensor's internal coordinate system with world
-TOF_BOARD = BoardConfig(
-    world_position=(0.0, -0.0254, 0.0),
-    sensor_offset=(0.0, 0.004, 0.0005),  # Sensor above and forward of board center
-    dimensions=(0.010, 0.016, 0.001),
-    texture="vl53l5cx-atlas.png",
-    sensor_yaw_deg=90.0,  # 90° CCW rotation to align with world frame
-    is_atlas=True,
-    fallback_color=(0, 100, 0, 255),  # Green
-)
+TOF_BOARDS = [
+    BoardConfig(
+        world_position=get_tof_sensor_position(i),
+        sensor_offset=(0.0, 0.004, 0.0005),  # Sensor above and forward of board center
+        dimensions=(0.010, 0.016, 0.001),
+        texture="vl53l5cx-atlas.png",
+        sensor_yaw_deg=90.0,  # 90° CCW rotation to align with world frame
+        is_atlas=True,
+        fallback_color=(0, 100, 0, 255),  # Green
+    )
+    for i in range(NUM_TOF_SENSORS)
+]
+
+# Backward compatibility: single sensor at center position (sensor 2)
+TOF_BOARD = TOF_BOARDS[2]
 
 # Visualization settings
 TARGET_FPS = 30  # Target visualization frame rate

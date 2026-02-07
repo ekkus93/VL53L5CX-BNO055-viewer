@@ -23,9 +23,8 @@ class SerialReader:
         self.serial: serial.Serial | None = None
         self.running = False
 
-        # Data storage
-        self.distances = np.zeros(config.NUM_ZONES, dtype=np.float32)
-        self.status = np.zeros(config.NUM_ZONES, dtype=np.uint8)
+        # Data storage - dict maps sensor_id -> (distances, status)
+        self.sensor_data: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         self.quaternion = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # wxyz identity
         self._imu_connected = False  # True if IMU data has been received
         self._data_lock = threading.Lock()
@@ -76,14 +75,19 @@ class SerialReader:
             self._thread.join(timeout=1)
             self._thread = None
 
-    def get_data(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Get a copy of the latest distance, status, and quaternion data.
+    def get_data(self) -> tuple[dict[int, tuple[np.ndarray, np.ndarray]], np.ndarray]:
+        """Get a copy of the latest data for all sensors.
 
         Returns:
-            Tuple of (distances, status, quaternion) arrays
+            Tuple of (sensor_data_dict, quaternion) where
+            sensor_data_dict maps sensor_id -> (distances, status)
         """
         with self._data_lock:
-            return self.distances.copy(), self.status.copy(), self.quaternion.copy()
+            sensor_data_copy = {
+                sensor_id: (distances.copy(), status.copy())
+                for sensor_id, (distances, status) in self.sensor_data.items()
+            }
+            return sensor_data_copy, self.quaternion.copy()
 
     def _validate_distances(self, distances: list) -> bool:
         """Validate distance values are within expected range."""
@@ -138,49 +142,89 @@ class SerialReader:
                         if line_str.startswith("{"):
                             try:
                                 data = json.loads(line_str)
-                                if "distances" in data and "status" in data:
+
+                                # Check version (warn once)
+                                if not self._version_checked:
+                                    self._version_checked = True
+                                    firmware_version = data.get("v")
+                                    if firmware_version is None:
+                                        logger.warning(
+                                            "No version in data. "
+                                            "Firmware may be outdated - consider reflashing."
+                                        )
+                                    elif firmware_version != config.VERSION:
+                                        logger.info(
+                                            "Version mismatch: firmware=%s, viewer=%s. "
+                                            "Backward compatibility enabled.",
+                                            firmware_version, config.VERSION
+                                        )
+
+                                # Validate quaternion if present
+                                if "quat" in data and not self._validate_quaternion(data["quat"]):
+                                    logger.warning("Invalid quaternion values detected (NaN/Inf)")
+                                    data.pop("quat")  # Still process sensor data, skip bad quaternion
+
+                                # Parse sensor data - handle both old and new formats
+                                sensor_data_new = {}
+
+                                if "sensors" in data:
+                                    # New multi-sensor format
+                                    for sensor_obj in data["sensors"]:
+                                        sensor_id = sensor_obj["id"]
+                                        distances = sensor_obj["distances"]
+                                        status = sensor_obj["status"]
+
+                                        # Validate array lengths
+                                        if len(distances) != config.NUM_ZONES or len(status) != config.NUM_ZONES:
+                                            logger.warning(
+                                                "Invalid array lengths for sensor %d: distances=%d, status=%d (expected %d)",
+                                                sensor_id, len(distances), len(status), config.NUM_ZONES
+                                            )
+                                            continue
+
+                                        # Validate distance values
+                                        if not self._validate_distances(distances):
+                                            logger.warning("Invalid distance values detected for sensor %d (NaN/Inf)", sensor_id)
+                                            continue
+
+                                        sensor_data_new[sensor_id] = (
+                                            np.array(distances, dtype=np.float32),
+                                            np.array(status, dtype=np.uint8)
+                                        )
+
+                                elif "distances" in data and "status" in data:
+                                    # Old single-sensor format (backward compatibility)
                                     distances = data["distances"]
                                     status = data["status"]
-                                    # Validate array lengths to handle corrupted serial data
+
+                                    # Validate array lengths
                                     if len(distances) != config.NUM_ZONES or len(status) != config.NUM_ZONES:
                                         logger.warning(
                                             "Invalid array lengths: distances=%d, status=%d (expected %d)",
                                             len(distances), len(status), config.NUM_ZONES
                                         )
                                         continue
+
                                     # Validate distance values
                                     if not self._validate_distances(distances):
                                         logger.warning("Invalid distance values detected (NaN/Inf)")
                                         continue
-                                    # Validate quaternion if present
-                                    if "quat" in data and not self._validate_quaternion(data["quat"]):
-                                        logger.warning("Invalid quaternion values detected (NaN/Inf)")
-                                        data.pop("quat")  # Still process distances, skip bad quaternion
-                                    # Check version (warn once)
-                                    if not self._version_checked:
-                                        self._version_checked = True
-                                        firmware_version = data.get("v")
-                                        if firmware_version is None:
-                                            logger.warning(
-                                                "No version in data. "
-                                                "Firmware may be outdated - consider reflashing."
-                                            )
-                                        elif firmware_version != config.VERSION:
-                                            logger.warning(
-                                                "Version mismatch: firmware=%s, viewer=%s. "
-                                                "Consider reflashing the ESP32.",
-                                                firmware_version, config.VERSION
-                                            )
+
+                                    sensor_data_new[0] = (
+                                        np.array(distances, dtype=np.float32),
+                                        np.array(status, dtype=np.uint8)
+                                    )
+
+                                # Update stored data
+                                if sensor_data_new:
                                     with self._data_lock:
-                                        self.distances = np.array(distances, dtype=np.float32)
-                                        self.status = np.array(status, dtype=np.uint8)
+                                        self.sensor_data = sensor_data_new
                                         if "quat" in data:
-                                            self.quaternion = np.array(
-                                                data["quat"], dtype=np.float32
-                                            )
+                                            self.quaternion = np.array(data["quat"], dtype=np.float32)
                                             self._imu_connected = True
                                         else:
-                                            logger.debug("No quaternion data in packet (IMU may not be connected or firmware outdated)")
+                                            logger.debug("No quaternion data in packet (IMU may not be connected)")
+
                                     # Track data FPS
                                     self._frame_count += 1
                                     now = time.time()

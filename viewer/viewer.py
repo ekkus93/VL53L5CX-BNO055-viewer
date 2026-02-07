@@ -94,22 +94,29 @@ class VL53L5CXViewer:
     def __init__(self, port: str, baud: int = 115200):
         self.serial_reader = SerialReader(port, baud)
         self.zone_angles = compute_zone_angles()
-        self.temporal_filter = TemporalFilter()
 
-        # Compute board positions and offsets
+        # One temporal filter per sensor
+        self.temporal_filters = [TemporalFilter() for _ in range(config.NUM_TOF_SENSORS)]
+
+        # Compute board positions and offsets for IMU
         self.imu_board_center = (
             np.array(config.IMU_BOARD.world_position)
             - np.array(config.IMU_BOARD.sensor_offset)
         )
-        self.tof_board_center = (
-            np.array(config.TOF_BOARD.world_position)
-            - np.array(config.TOF_BOARD.sensor_offset)
-        )
-        # Offset from IMU sensor to ToF sensor (for rotating ToF position when IMU active)
-        self.imu_to_tof_offset = (
-            np.array(config.TOF_BOARD.world_position)
+
+        # Compute board positions for all ToF sensors
+        self.tof_board_centers = [
+            np.array(config.TOF_BOARDS[i].world_position)
+            - np.array(config.TOF_BOARDS[i].sensor_offset)
+            for i in range(config.NUM_TOF_SENSORS)
+        ]
+
+        # Offset from IMU sensor to each ToF sensor (for rotating ToF positions when IMU active)
+        self.imu_to_tof_offsets = [
+            np.array(config.TOF_BOARDS[i].world_position)
             - np.array(config.IMU_BOARD.world_position)
-        )
+            for i in range(config.NUM_TOF_SENSORS)
+        ]
 
     def _setup_scene(self, server: viser.ViserServer):
         """Initialize the 3D scene."""
@@ -124,6 +131,15 @@ class VL53L5CXViewer:
             self.distance_text = server.gui.add_text("Status", initial_value="Waiting...")
             self.freq_text = server.gui.add_text("Frequency (Hz)", initial_value="0")
             self.imu_status_text = server.gui.add_text("IMU", initial_value="Not detected")
+
+        with server.gui.add_folder("Sensors"):
+            self.sensor_checkboxes = []
+            for i in range(config.NUM_TOF_SENSORS):
+                checkbox = server.gui.add_checkbox(
+                    f"Sensor {i}",
+                    initial_value=True
+                )
+                self.sensor_checkboxes.append(checkbox)
 
         with server.gui.add_folder("Settings"):
             self.point_size_slider = server.gui.add_slider(
@@ -145,9 +161,11 @@ class VL53L5CXViewer:
                     method = next(
                         m for m in CoordinateMethod if m.value == self.coord_method_dropdown.value
                     )
-                    self.scene.zone_rays = update_zone_rays(
-                        server, self.zone_angles, method, visible=self.show_rays_checkbox.value
-                    )
+                    for i in range(config.NUM_TOF_SENSORS):
+                        self.scene.zone_rays[i] = update_zone_rays(
+                            server, self.zone_angles, method,
+                            visible=self.show_rays_checkbox.value, sensor_id=i
+                        )
 
             server.gui.add_markdown("---")
             self.coord_method_dropdown = server.gui.add_dropdown(
@@ -161,10 +179,12 @@ class VL53L5CXViewer:
                 method = next(
                     m for m in CoordinateMethod if m.value == self.coord_method_dropdown.value
                 )
-                # Update rays and replace stale handles
-                self.scene.zone_rays = update_zone_rays(
-                    server, self.zone_angles, method, visible=self.show_rays_checkbox.value
-                )
+                # Update rays and replace stale handles for all sensors
+                for i in range(config.NUM_TOF_SENSORS):
+                    self.scene.zone_rays[i] = update_zone_rays(
+                        server, self.zone_angles, method,
+                        visible=self.show_rays_checkbox.value, sensor_id=i
+                    )
 
             server.gui.add_markdown("---")
             self.imu_rotation_checkbox = server.gui.add_checkbox(
@@ -180,7 +200,8 @@ class VL53L5CXViewer:
             def _on_filter_toggle(event: viser.GuiEvent) -> None:
                 self.filter_strength_slider.disabled = not self.filter_checkbox.value
                 if not self.filter_checkbox.value:
-                    self.temporal_filter.reset()
+                    for filter in self.temporal_filters:
+                        filter.reset()
 
             server.gui.add_markdown("---")
             self.fit_plane_checkbox = server.gui.add_checkbox("Fit Plane", initial_value=False)
@@ -231,18 +252,19 @@ class VL53L5CXViewer:
             @self.mapping_checkbox.on_update
             def _on_mapping_toggle(event: viser.GuiEvent) -> None:
                 if self.mapping_checkbox.value:
-                    # Entering mapping mode: remove live points
-                    server.scene.remove_by_name("/breadboard/tof/sensor/points")
+                    # Entering mapping mode: remove live points from all sensors
+                    for i in range(config.NUM_TOF_SENSORS):
+                        server.scene.remove_by_name(f"/breadboard/tof_{i}/sensor/points")
                 else:
                     # Exiting mapping mode: clear accumulated map
                     mapping_state.request_clear()
 
     def _update_scene_transforms(
         self, corrected_quat: np.ndarray, imu_connected: bool, apply_rotation: bool
-    ) -> tuple[np.ndarray, Rotation] | None:
+    ) -> list[tuple[np.ndarray, Rotation]] | None:
         """Update board frame transforms based on IMU orientation.
 
-        Returns (tof_sensor_world_pos, tof_world_rot) if IMU active, else None.
+        Returns list of (tof_sensor_world_pos, tof_world_rot) for each sensor if IMU active, else None.
         """
         imu_sensor_pos = np.array(config.IMU_BOARD.world_position)
 
@@ -259,31 +281,33 @@ class VL53L5CXViewer:
             rotated_imu_board_offset = imu_rot.apply(imu_board_offset)
             self.scene.imu_board.position = tuple(imu_sensor_pos + rotated_imu_board_offset)
 
-            # ToF sensor position: IMU sensor + rotated offset
-            tof_sensor_pos = imu_sensor_pos + imu_rot.apply(self.imu_to_tof_offset)
-            # ToF board rotates with IMU
-            self.scene.tof_board.wxyz = tuple(corrected_quat)
-            tof_board_offset = -np.array(config.TOF_BOARD.sensor_offset)
-            rotated_tof_board_offset = imu_rot.apply(tof_board_offset)
-            self.scene.tof_board.position = tuple(tof_sensor_pos + rotated_tof_board_offset)
+            # Update all ToF sensor positions
+            transforms = []
+            for i in range(config.NUM_TOF_SENSORS):
+                # ToF sensor position: IMU sensor + rotated offset
+                tof_sensor_pos = imu_sensor_pos + imu_rot.apply(self.imu_to_tof_offsets[i])
+                # ToF board rotates with IMU
+                self.scene.tof_boards[i].wxyz = tuple(corrected_quat)
+                tof_board_offset = -np.array(config.TOF_BOARDS[i].sensor_offset)
+                rotated_tof_board_offset = imu_rot.apply(tof_board_offset)
+                self.scene.tof_boards[i].position = tuple(tof_sensor_pos + rotated_tof_board_offset)
+                transforms.append((tof_sensor_pos, imu_rot))
 
-            return tof_sensor_pos, imu_rot
+            return transforms
         else:
             # Reset to configured positions
             self.scene.imu_board.wxyz = (1.0, 0.0, 0.0, 0.0)
             self.scene.imu_board.position = tuple(self.imu_board_center)
-            self.scene.tof_board.wxyz = (1.0, 0.0, 0.0, 0.0)
-            self.scene.tof_board.position = tuple(self.tof_board_center)
+            for i in range(config.NUM_TOF_SENSORS):
+                self.scene.tof_boards[i].wxyz = (1.0, 0.0, 0.0, 0.0)
+                self.scene.tof_boards[i].position = tuple(self.tof_board_centers[i])
             return None
 
     def _process_frame(
         self, server: viser.ViserServer, mapping_state: MappingState, plane_handle
     ):
         """Process a single frame of sensor data."""
-        distances, status, quaternion = self.serial_reader.get_data()
-
-        if self.filter_checkbox.value:
-            distances = self.temporal_filter.apply(distances, self.filter_strength_slider.value)
+        sensor_data, quaternion = self.serial_reader.get_data()
 
         imu_connected = self.serial_reader.imu_connected
         self.imu_status_text.value = "Connected" if imu_connected else "Not detected"
@@ -295,124 +319,156 @@ class VL53L5CXViewer:
             self.point_count_text.value = "0"
             server.scene.remove_by_name("/map/points")
 
-        if np.any(distances > 0):
-            # Get selected coordinate method
-            coord_method = next(
-                m for m in CoordinateMethod if m.value == self.coord_method_dropdown.value
-            )
+        # Update scene transforms and get world transform info
+        transforms_result = self._update_scene_transforms(
+            corrected_quat, imu_connected, self.imu_rotation_checkbox.value
+        )
 
-            # Points in sensor-local coordinates (z forward from sensor)
-            points_local = distances_to_points(distances, self.zone_angles, coord_method)
-            colors = get_colors(distances, status)
-            valid_mask = (status == 5) & (distances >= config.MIN_RANGE_MM)
+        # Get selected coordinate method
+        coord_method = next(
+            m for m in CoordinateMethod if m.value == self.coord_method_dropdown.value
+        )
 
-            # Update scene transforms and get world transform info
-            transform_result = self._update_scene_transforms(
-                corrected_quat, imu_connected, self.imu_rotation_checkbox.value
-            )
+        # Process each sensor's data
+        all_valid_distances = []
+        for sensor_id, (distances, status) in sensor_data.items():
+            # Skip if sensor disabled in GUI
+            if sensor_id >= len(self.sensor_checkboxes) or not self.sensor_checkboxes[sensor_id].value:
+                # Remove point cloud if sensor disabled
+                server.scene.remove_by_name(f"/breadboard/tof_{sensor_id}/sensor/points")
+                continue
 
-            if np.any(valid_mask):
-                valid_local = points_local[valid_mask].astype(np.float32)
-                valid_colors = colors[valid_mask]
-
-                # For mapping mode, we need points in world coordinates
-                if self.mapping_checkbox.value:
-                    # Transform local points to world
-                    if transform_result is not None:
-                        tof_sensor_pos, imu_rot = transform_result
-                        # Apply sensor yaw, then IMU rotation, then translate
-                        sensor_yaw = Rotation.from_euler(
-                            "z", config.TOF_BOARD.sensor_yaw_deg, degrees=True
-                        )
-                        world_rot = imu_rot * sensor_yaw
-                        valid_world = world_rot.apply(valid_local) + tof_sensor_pos
-                    else:
-                        # Just sensor yaw + offset
-                        sensor_yaw = Rotation.from_euler(
-                            "z", config.TOF_BOARD.sensor_yaw_deg, degrees=True
-                        )
-                        valid_world = (
-                            sensor_yaw.apply(valid_local)
-                            + np.array(config.TOF_BOARD.world_position)
-                        )
-
-                    mapping_state.add(valid_world, valid_colors)
-
-                    if (
-                        mapping_state.total_points() > config.DOWNSAMPLE_POINT_THRESHOLD
-                        or len(mapping_state.accumulated_points)
-                        > config.DOWNSAMPLE_BUFFER_THRESHOLD
-                    ):
-                        voxel_size_m = self.voxel_size_slider.value / 1000.0
-                        max_pts = self.max_points_slider.value * 1000
-                        mapping_state.downsample(voxel_size_m, max_pts)
-
-                    display_points, display_colors = mapping_state.get_display_data()
-                    self.point_count_text.value = f"{len(display_points):,}"
-
-                    # Mapping points in world space
-                    server.scene.add_point_cloud(
-                        "/map/points",
-                        points=display_points,
-                        colors=display_colors,
-                        point_size=self.point_size_slider.value,
-                        point_shape="circle",
-                    )
-                else:
-                    # Live points in sensor-local coordinates (frame handles transform)
-                    server.scene.add_point_cloud(
-                        "/breadboard/tof/sensor/points",
-                        points=valid_local,
-                        colors=valid_colors,
-                        point_size=self.point_size_slider.value,
-                        point_shape="circle",
-                    )
-
-                # Plane fitting (in sensor-local for consistency with live view)
-                if self.fit_plane_checkbox.value and len(valid_local) >= 3:
-                    if self.plane_method_dropdown.value == "RANSAC":
-                        threshold_m = self.ransac_threshold_slider.value / 1000.0
-                        plane_fit = fit_plane_ransac(valid_local, threshold=threshold_m)
-                    else:
-                        plane_fit = fit_plane(valid_local)
-
-                    if plane_fit is not None:
-                        pos, wxyz, size, rmse_mm = plane_fit
-                        self.plane_error_text.value = f"{rmse_mm:.2f}"
-                        plane_handle = server.scene.add_box(
-                            "/breadboard/tof/sensor/plane",
-                            dimensions=(size, size, 0.0001),
-                            position=pos,
-                            wxyz=wxyz,
-                            color=(255, 255, 0),
-                            opacity=0.5,
-                        )
-
-                valid_distances = distances[valid_mask]
-                self.distance_text.value = (
-                    f"Range: {valid_distances.min():.0f}-{valid_distances.max():.0f}mm"
+            # Apply filtering if enabled
+            if self.filter_checkbox.value:
+                distances = self.temporal_filters[sensor_id].apply(
+                    distances, self.filter_strength_slider.value
                 )
-            else:
-                self.distance_text.value = "No valid data"
+
+            if np.any(distances > 0):
+                # Points in sensor-local coordinates (z forward from sensor)
+                points_local = distances_to_points(distances, self.zone_angles, coord_method)
+                colors = get_colors(distances, status)
+                valid_mask = (status == 5) & (distances >= config.MIN_RANGE_MM)
+
+                if np.any(valid_mask):
+                    valid_local = points_local[valid_mask].astype(np.float32)
+                    valid_colors = colors[valid_mask]
+
+                    # For mapping mode, we need points in world coordinates
+                    if self.mapping_checkbox.value:
+                        # Transform local points to world
+                        if transforms_result is not None:
+                            tof_sensor_pos, imu_rot = transforms_result[sensor_id]
+                            # Apply sensor yaw, then IMU rotation, then translate
+                            sensor_yaw = Rotation.from_euler(
+                                "z", config.TOF_BOARDS[sensor_id].sensor_yaw_deg, degrees=True
+                            )
+                            world_rot = imu_rot * sensor_yaw
+                            valid_world = world_rot.apply(valid_local) + tof_sensor_pos
+                        else:
+                            # Just sensor yaw + offset
+                            sensor_yaw = Rotation.from_euler(
+                                "z", config.TOF_BOARDS[sensor_id].sensor_yaw_deg, degrees=True
+                            )
+                            valid_world = (
+                                sensor_yaw.apply(valid_local)
+                                + np.array(config.TOF_BOARDS[sensor_id].world_position)
+                            )
+
+                        mapping_state.add(valid_world, valid_colors)
+                    else:
+                        # Live points in sensor-local coordinates (frame handles transform)
+                        server.scene.add_point_cloud(
+                            f"/breadboard/tof_{sensor_id}/sensor/points",
+                            points=valid_local,
+                            colors=valid_colors,
+                            point_size=self.point_size_slider.value,
+                            point_shape="circle",
+                        )
+
+                    # Plane fitting (in sensor-local for consistency with live view)
+                    if self.fit_plane_checkbox.value and len(valid_local) >= 3:
+                        if self.plane_method_dropdown.value == "RANSAC":
+                            threshold_m = self.ransac_threshold_slider.value / 1000.0
+                            plane_fit = fit_plane_ransac(valid_local, threshold=threshold_m)
+                        else:
+                            plane_fit = fit_plane(valid_local)
+
+                        if plane_fit is not None:
+                            pos, wxyz, size, rmse_mm = plane_fit
+                            self.plane_error_text.value = f"{rmse_mm:.2f}"
+                            plane_handle = server.scene.add_box(
+                                f"/breadboard/tof_{sensor_id}/sensor/plane",
+                                dimensions=(size, size, 0.0001),
+                                position=pos,
+                                wxyz=wxyz,
+                                color=(255, 255, 0),
+                                opacity=0.5,
+                            )
+
+                    valid_distances = distances[valid_mask]
+                    all_valid_distances.append(valid_distances)
+
+        # Update mapping mode display if enabled
+        if self.mapping_checkbox.value and mapping_state.total_points() > 0:
+            if (
+                mapping_state.total_points() > config.DOWNSAMPLE_POINT_THRESHOLD
+                or len(mapping_state.accumulated_points) > config.DOWNSAMPLE_BUFFER_THRESHOLD
+            ):
+                voxel_size_m = self.voxel_size_slider.value / 1000.0
+                max_pts = self.max_points_slider.value * 1000
+                mapping_state.downsample(voxel_size_m, max_pts)
+
+            display_points, display_colors = mapping_state.get_display_data()
+            self.point_count_text.value = f"{len(display_points):,}"
+
+            # Mapping points in world space
+            server.scene.add_point_cloud(
+                "/map/points",
+                points=display_points,
+                colors=display_colors,
+                point_size=self.point_size_slider.value,
+                point_shape="circle",
+            )
+
+        # Update status text with distance range from all sensors
+        if all_valid_distances:
+            all_distances = np.concatenate(all_valid_distances)
+            self.distance_text.value = (
+                f"Range: {all_distances.min():.0f}-{all_distances.max():.0f}mm"
+            )
+        else:
+            self.distance_text.value = "No valid data"
 
         if plane_handle is not None:
             plane_handle.visible = self.fit_plane_checkbox.value
 
         self.freq_text.value = f"{self.serial_reader.data_fps:.1f}"
 
-        # Update zone rays visibility and clipping
-        if self.show_rays_checkbox.value and self.clip_rays_checkbox.value:
-            # Recreate rays clipped to measured distances
-            coord_method = next(
-                m for m in CoordinateMethod if m.value == self.coord_method_dropdown.value
-            )
-            self.scene.zone_rays = update_zone_rays(
-                server, self.zone_angles, coord_method,
-                visible=True, distances=distances
-            )
-        else:
-            for ray in self.scene.zone_rays:
-                ray.visible = self.show_rays_checkbox.value
+        # Update zone rays visibility and clipping for each sensor
+        for sensor_id in range(config.NUM_TOF_SENSORS):
+            # Skip if sensor disabled
+            if sensor_id >= len(self.sensor_checkboxes) or not self.sensor_checkboxes[sensor_id].value:
+                # Hide rays for disabled sensors
+                for ray in self.scene.zone_rays[sensor_id]:
+                    ray.visible = False
+                continue
+
+            # Get this sensor's distances if available
+            sensor_distances = None
+            if sensor_id in sensor_data:
+                sensor_distances, _ = sensor_data[sensor_id]
+
+            if self.show_rays_checkbox.value and self.clip_rays_checkbox.value and sensor_distances is not None:
+                # Recreate rays clipped to measured distances
+                self.scene.zone_rays[sensor_id] = update_zone_rays(
+                    server, self.zone_angles, coord_method,
+                    visible=True, distances=sensor_distances, sensor_id=sensor_id
+                )
+            else:
+                # Just update visibility
+                for ray in self.scene.zone_rays[sensor_id]:
+                    ray.visible = self.show_rays_checkbox.value
 
         return plane_handle
 
