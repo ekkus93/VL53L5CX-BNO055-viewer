@@ -170,6 +170,9 @@ class SerialReader:
                                 if "sensors" in data:
                                     # New multi-sensor format
                                     for sensor_obj in data["sensors"]:
+                                        if "id" not in sensor_obj or "distances" not in sensor_obj or "status" not in sensor_obj:
+                                            logger.debug("Skipping malformed sensor object: %s", list(sensor_obj.keys()))
+                                            continue
                                         sensor_id = sensor_obj["id"]
                                         distances = sensor_obj["distances"]
                                         status = sensor_obj["status"]
@@ -222,8 +225,8 @@ class SerialReader:
                                         if "quat" in data:
                                             self.quaternion = np.array(data["quat"], dtype=np.float32)
                                             self._imu_connected = True
-                                        else:
-                                            logger.debug("No quaternion data in packet (IMU may not be connected)")
+                                        elif not self._imu_connected:
+                                            pass  # No IMU — quaternion stays at identity
 
                                     # Track data FPS
                                     self._frame_count += 1
