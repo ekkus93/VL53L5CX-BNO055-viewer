@@ -19,10 +19,10 @@ Real-time 3D point cloud viewer for the VL53L5CX multi-zone time-of-flight senso
 
 ## Hardware
 
-**Components (~£24 / $30 / €28 from AliExpress):**
-- ESP32-S3 dev board (~£4)
-- VL53L5CX ToF sensor (~£5)
-- BNO055 IMU (~£15)
+**Components (from AliExpress):**
+- ESP32-S3 dev board
+- VL53L5CX ToF sensor
+- BNO055 IMU
 
 **Wiring (ESP32-S3):**
 
