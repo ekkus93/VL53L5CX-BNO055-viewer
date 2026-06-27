@@ -20,7 +20,7 @@ Real-time 3D point cloud viewer for the VL53L5CX multi-zone time-of-flight senso
 ## Hardware
 
 **Components (from AliExpress):**
-- ESP32-S3 dev board
+- ESP32-S3 dev board ([ESP32-S3 DevKit](https://www.oceanlabz.in/esp32-s3-devkit-pinout-reference/))
 - VL53L5CX ToF sensor
 - BNO055 IMU
 
