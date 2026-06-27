@@ -16,7 +16,6 @@ from .filters import TemporalFilter, fit_plane, fit_plane_ransac
 from .geometry import (
     CoordinateMethod,
     compute_zone_angles,
-    correct_imu_to_tof_frame,
     distances_to_points,
     get_colors,
 )
@@ -96,6 +95,12 @@ class VL53L5CXViewer:
         self.zone_angles = compute_zone_angles()
         self.temporal_filter = TemporalFilter()
 
+        # IMU orientation zeroing (see "Zero Orientation" button). The displayed
+        # orientation is shown relative to this captured reference pose, so it works
+        # with any IMU without a hard-coded frame correction.
+        self._imu_reference_rot = None
+        self._zero_imu_requested = False
+
         # Compute board positions and offsets
         self.imu_board_center = (
             np.array(config.IMU_BOARD.world_position)
@@ -170,6 +175,13 @@ class VL53L5CXViewer:
             self.imu_rotation_checkbox = server.gui.add_checkbox(
                 "Apply IMU Rotation", initial_value=True
             )
+            self.zero_imu_button = server.gui.add_button("Zero Orientation")
+
+            @self.zero_imu_button.on_click
+            def _on_zero_imu_click(event: viser.GuiEvent) -> None:
+                # Capture the current pose as the reference on the next frame.
+                self._zero_imu_requested = True
+
             server.gui.add_markdown("---")
             self.filter_checkbox = server.gui.add_checkbox("Enable Filtering", initial_value=False)
             self.filter_strength_slider = server.gui.add_slider(
@@ -276,6 +288,33 @@ class VL53L5CXViewer:
             self.scene.tof_board.position = tuple(self.tof_board_center)
             return None
 
+    def _corrected_imu_quat(self, quaternion: np.ndarray, imu_connected: bool) -> np.ndarray:
+        """Return the orientation quaternion (wxyz) to apply to the sensor frame.
+
+        The orientation is expressed relative to a captured reference pose (set by the
+        "Zero Orientation" button, or auto-captured on the first IMU frame). This makes
+        the displayed rotation independent of the IMU's mounting and axis convention -
+        clicking Zero while holding the sensor in any pose makes that pose "neutral".
+        """
+        if not imu_connected:
+            return quaternion
+
+        # Raw IMU rotation (convert wxyz -> xyzw for scipy).
+        raw = Rotation.from_quat(
+            [quaternion[1], quaternion[2], quaternion[3], quaternion[0]]
+        )
+
+        # Capture a new reference pose on request, or on the first IMU frame.
+        if self._zero_imu_requested or self._imu_reference_rot is None:
+            self._imu_reference_rot = raw
+            self._zero_imu_requested = False
+
+        # World-frame rotation since the reference pose: delta = raw * ref^-1.
+        # At the reference pose this is identity (sensor frame level / unrotated).
+        delta = raw * self._imu_reference_rot.inv()
+        q = delta.as_quat()  # scipy returns xyzw
+        return np.array([q[3], q[0], q[1], q[2]])  # back to wxyz
+
     def _process_frame(
         self, server: viser.ViserServer, mapping_state: MappingState, plane_handle
     ):
@@ -288,7 +327,7 @@ class VL53L5CXViewer:
         imu_connected = self.serial_reader.imu_connected
         self.imu_status_text.value = "Connected" if imu_connected else "Not detected"
 
-        corrected_quat = correct_imu_to_tof_frame(quaternion) if imu_connected else quaternion
+        corrected_quat = self._corrected_imu_quat(quaternion, imu_connected)
 
         # Handle clear request atomically in main loop (must be outside sensor data check)
         if mapping_state.process_clear_if_requested():
@@ -416,7 +455,7 @@ class VL53L5CXViewer:
 
         return plane_handle
 
-    def run(self, host: str = "0.0.0.0", port: int = 8080):
+    def run(self, host: str = "0.0.0.0", port: int = 8081):
         """Start the viewer."""
         self.serial_reader.connect()
         self.serial_reader.start()
@@ -468,7 +507,7 @@ def main():
         "--host", default="0.0.0.0", help="Viser server host (default: 0.0.0.0)"
     )
     parser.add_argument(
-        "--viser-port", type=int, default=8080, help="Viser server port (default: 8080)"
+        "--viser-port", type=int, default=8081, help="Viser server port (default: 8081)"
     )
     parser.add_argument(
         "--debug", "-d", action="store_true", help="Enable debug logging"

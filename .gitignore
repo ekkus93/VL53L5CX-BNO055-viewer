@@ -19,3 +19,8 @@ venv/
 
 # Datasheets (link to official sources instead)
 *.pdf
+
+# Firmware IDE / debugger artifacts
+firmware/vl53l5cx_reader/debug.cfg
+firmware/vl53l5cx_reader/debug_custom.json
+firmware/vl53l5cx_reader/*.svd
