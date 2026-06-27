@@ -100,6 +100,16 @@ class VL53L5CXViewer:
         # with any IMU without a hard-coded frame correction.
         self._imu_reference_rot = None
         self._zero_imu_requested = False
+        self._last_delta_euler = np.zeros(3)  # debug: relative IMU Euler (XYZ deg)
+        # IMU-to-screen calibration (derived from on-hardware measurement).
+        # The BNO055's native axes are: X = pitch, Z = yaw, Y = roll/forward.
+        # _imu_basis re-expresses the IMU's relative rotation in the viewer's
+        # screen frame (so pitch->up/down, yaw->left/right track correctly), and
+        # _rest_pose_tilt orients the reference pose to point into the screen with
+        # the boards upright. See _corrected_imu_quat.
+        self._imu_basis = Rotation.from_euler("z", 180, degrees=True)
+        self._imu_basis_inv = self._imu_basis.inv()
+        self._rest_pose_tilt = Rotation.from_euler("xyz", [90, 0, 180], degrees=True)
 
         # Compute board positions and offsets
         self.imu_board_center = (
@@ -129,6 +139,9 @@ class VL53L5CXViewer:
             self.distance_text = server.gui.add_text("Status", initial_value="Waiting...")
             self.freq_text = server.gui.add_text("Frequency (Hz)", initial_value="0")
             self.imu_status_text = server.gui.add_text("IMU", initial_value="Not detected")
+            # Debug readout: relative IMU rotation (delta vs reference) as Euler
+            # X/Y/Z degrees. Used to calibrate the axis mapping.
+            self.imu_euler_text = server.gui.add_text("IMU dXYZ", initial_value="0, 0, 0")
 
         with server.gui.add_folder("Settings"):
             self.point_size_slider = server.gui.add_slider(
@@ -312,8 +325,21 @@ class VL53L5CXViewer:
         # World-frame rotation since the reference pose: delta = raw * ref^-1.
         # At the reference pose this is identity (sensor frame level / unrotated).
         delta = raw * self._imu_reference_rot.inv()
-        q = delta.as_quat()  # scipy returns xyzw
-        return np.array([q[3], q[0], q[1], q[2]])  # back to wxyz
+
+        # Debug: record the raw relative rotation (before any correction) as
+        # extrinsic XYZ Euler degrees, so the GUI can show which IMU axis moves.
+        self._last_delta_euler = delta.as_euler("xyz", degrees=True)
+
+        # Re-express the IMU's relative rotation in the viewer's screen frame
+        # (C * delta * C^-1), then tip the reference pose to point into the screen.
+        # Calibrated on-hardware so pitch -> up/down, yaw -> left/right, and the
+        # boards sit upright (see self._imu_basis / self._rest_pose_tilt).
+        display = (
+            self._imu_basis * delta * self._imu_basis_inv * self._rest_pose_tilt
+        )
+
+        out = display.as_quat()  # xyzw
+        return np.array([out[3], out[0], out[1], out[2]])  # back to wxyz
 
     def _process_frame(
         self, server: viser.ViserServer, mapping_state: MappingState, plane_handle
@@ -328,6 +354,11 @@ class VL53L5CXViewer:
         self.imu_status_text.value = "Connected" if imu_connected else "Not detected"
 
         corrected_quat = self._corrected_imu_quat(quaternion, imu_connected)
+
+        # Debug readout of the relative IMU rotation (X/Y/Z degrees).
+        if imu_connected:
+            ex, ey, ez = self._last_delta_euler
+            self.imu_euler_text.value = f"{ex:+.0f}, {ey:+.0f}, {ez:+.0f}"
 
         # Handle clear request atomically in main loop (must be outside sensor data check)
         if mapping_state.process_clear_if_requested():

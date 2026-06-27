@@ -38,8 +38,8 @@ class BoardConfig:
     fallback_color: tuple[int, int, int, int] = (128, 128, 128, 255)
 
 
-# IMU board: BNO08x on 15mm x 26mm breakout
-# World position: at origin, sensor chip is the reference point
+# IMU board: BNO055 (Adafruit breakout) - reference frame at the world origin.
+# Physically mounted on the LEFT of the side-by-side perfboard layout.
 # Sensor offset: chip is ~4mm above board center in Y, flush with top surface in Z
 IMU_BOARD = BoardConfig(
     world_position=(0.0, 0.0, 0.0),
@@ -51,11 +51,12 @@ IMU_BOARD = BoardConfig(
 )
 
 # ToF board: VL53L5CX on 10mm x 16mm breakout
-# World position: ~1 inch (25.4mm) in -Y direction from IMU
+# World position: 18mm in +X (to the RIGHT of the IMU), coplanar and facing the
+# same direction - matches the physical side-by-side perfboard layout.
 # Sensor offset: aperture is ~4mm from top edge, flush with top surface
 # Sensor yaw: 90° CCW to align sensor's internal coordinate system with world
 TOF_BOARD = BoardConfig(
-    world_position=(0.0, -0.0254, 0.0),
+    world_position=(0.018, 0.0, 0.0),
     sensor_offset=(0.0, 0.004, 0.0005),  # Sensor above and forward of board center
     dimensions=(0.010, 0.016, 0.001),
     texture="vl53l5cx-atlas.png",
