@@ -111,7 +111,13 @@ def _create_board_mesh(
     else:
         board_mesh.visual.face_colors = board_config.fallback_color
 
-    return server.scene.add_mesh_trimesh(scene_path, mesh=board_mesh)
+    # Roll the board mesh 90 deg clockwise (about its local Z / face normal) so the
+    # rendered board matches its physical mounting. This is local to the mesh, so it
+    # rotates the board model in place without moving the side-by-side layout, the
+    # sensor frame, or the point cloud. wxyz = Rz(+90 deg).
+    return server.scene.add_mesh_trimesh(
+        scene_path, mesh=board_mesh, wxyz=(0.7071067811865476, 0.0, 0.0, 0.7071067811865476)
+    )
 
 
 def create_scene_hierarchy(

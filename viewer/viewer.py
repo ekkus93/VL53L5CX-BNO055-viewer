@@ -109,6 +109,11 @@ class VL53L5CXViewer:
         # the boards upright. See _corrected_imu_quat.
         self._imu_basis = Rotation.from_euler("z", 180, degrees=True)
         self._imu_basis_inv = self._imu_basis.inv()
+        # Rest-pose tilt orients the reference pose to point into the screen with
+        # the boards upright. Post-multiplied so it sets only the rest orientation
+        # and leaves the motion directions unchanged. (The 90 deg clockwise board
+        # rotation is applied to the meshes in scene.py, not here, so it does not
+        # disturb the side-by-side layout.)
         self._rest_pose_tilt = Rotation.from_euler("xyz", [90, 0, 180], degrees=True)
 
         # Compute board positions and offsets
