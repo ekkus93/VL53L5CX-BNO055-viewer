@@ -193,12 +193,22 @@ class VL53L5CXViewer:
             self.imu_rotation_checkbox = server.gui.add_checkbox(
                 "Apply IMU Rotation", initial_value=True
             )
-            self.zero_imu_button = server.gui.add_button("Zero Orientation")
+            # Captures the current pose as the "forward" reference: hold the rig
+            # pointing straight forward and level, then click. From then on that
+            # pose displays as the boards pointing straight into the screen.
+            self.zero_imu_button = server.gui.add_button("Calibrate Forward")
 
             @self.zero_imu_button.on_click
             def _on_zero_imu_click(event: viser.GuiEvent) -> None:
                 # Capture the current pose as the reference on the next frame.
                 self._zero_imu_requested = True
+
+            # Fine pitch trim for the displayed "forward": nudges the rest pose
+            # up/down a few degrees so the calibrated forward looks level to the
+            # eye (compensates for how the rig is held and the camera angle).
+            self.pitch_trim_slider = server.gui.add_slider(
+                "Forward Pitch Trim", min=-30, max=30, step=1, initial_value=0
+            )
 
             server.gui.add_markdown("---")
             self.filter_checkbox = server.gui.add_checkbox("Enable Filtering", initial_value=False)
@@ -338,10 +348,14 @@ class VL53L5CXViewer:
         # Re-express the IMU's relative rotation in the viewer's screen frame
         # (C * delta * C^-1), then tip the reference pose to point into the screen.
         # Calibrated on-hardware so pitch -> up/down, yaw -> left/right, and the
-        # boards sit upright (see self._imu_basis / self._rest_pose_tilt).
-        display = (
-            self._imu_basis * delta * self._imu_basis_inv * self._rest_pose_tilt
+        # boards sit upright (see self._imu_basis / self._rest_pose_tilt). The user
+        # pitch trim rotates the rest pose about the screen lateral axis; being a
+        # constant post-factor it shifts only the rest tilt, not the motion.
+        rest = (
+            Rotation.from_euler("x", self.pitch_trim_slider.value, degrees=True)
+            * self._rest_pose_tilt
         )
+        display = self._imu_basis * delta * self._imu_basis_inv * rest
 
         out = display.as_quat()  # xyzw
         return np.array([out[3], out[0], out[1], out[2]])  # back to wxyz
