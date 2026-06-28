@@ -24,6 +24,16 @@ Real-time 3D point cloud viewer for the VL53L5CX multi-zone time-of-flight senso
 - VL53L5CX ToF sensor
 - BNO055 IMU
 
+**Sensor layout:**
+
+![Sensor layout: BNO055 IMU and VL53L5CX ToF mounted side-by-side, facing the same direction](docs/sensor-layout.jpg)
+
+Mount the **BNO055 IMU** and the **VL53L5CX ToF sensor** side-by-side and
+**coplanar, facing the same direction** (as shown above). The viewer assumes the
+two sensors share an orientation, so keep their boards aligned. To set the
+"forward" reference, point the rig straight ahead and level and click **Calibrate
+Forward** in the viewer.
+
 **Wiring (ESP32-S3):**
 
 | VL53L5CX | ESP32-S3 |
